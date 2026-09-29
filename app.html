@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PourMath</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f141b; color: #e8eef5; max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { margin: 0 0 4px; }
+  p.sub { color: #9fb0c3; margin: 0 0 20px; }
+  .presets { margin: 0 0 20px; }
+  .presets button { background: #1c2530; color: #9fc2e8; border: 1px solid #2d3b4d; border-radius: 999px; padding: 8px 16px; margin: 0 8px 8px 0; cursor: pointer; font-size: .9rem; }
+  .presets button:hover { background: #253243; }
+  section { background: #16202c; border: 1px solid #243143; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  h2 { margin: 0 0 14px; font-size: 1.05rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; align-items: flex-end; }
+  label { display: block; font-size: .8rem; color: #9fb0c3; margin-bottom: 4px; }
+  input, select { background: #0f141b; border: 1px solid #2d3b4d; color: #e8eef5; border-radius: 8px; padding: 9px 10px; font-size: 1rem; }
+  input.ml { width: 84px; } input.abv { width: 84px; } input.nm { width: 140px; }
+  .outs { display: flex; flex-wrap: wrap; gap: 14px; }
+  .out { background: #101922; border: 1px solid #243143; border-radius: 12px; padding: 14px 18px; min-width: 140px; flex: 1; }
+  .out .v { font-size: 1.4rem; font-weight: 700; color: #7fc4ff; }
+  .out .k { font-size: .8rem; color: #9fb0c3; margin-top: 4px; }
+  .wide { min-width: 260px; }
+  .wide .v { font-size: 1.02rem; line-height: 1.45; }
+</style>
+</head>
+<body>
+<h1>&#127864; PourMath</h1>
+<p class="sub">Cocktail dilution and strength math - the shaker changes the numbers.</p>
+<div class="presets" id="presets"></div>
+
+<section>
+  <h2>1. The spec (up to 4 ingredients)</h2>
+  <div id="ings"></div>
+  <div class="row">
+    <div><label>Method</label><select id="method">
+      <option value="shaken">shaken</option>
+      <option value="stirred">stirred</option>
+      <option value="built">built</option>
+      <option value="neat">neat</option>
+    </select></div>
+    <div><label>Servings</label><input id="servings" type="number" step="1" value="1" class="ml"></div>
+  </div>
+</section>
+
+<section>
+  <h2>2. What lands in the glass</h2>
+  <div class="outs">
+    <div class="out"><div class="v" id="o-abv">-</div><div class="k">Final ABV</div></div>
+    <div class="out"><div class="v" id="o-vol">-</div><div class="k">Final volume</div></div>
+    <div class="out"><div class="v" id="o-water">-</div><div class="k">Water from ice</div></div>
+    <div class="out"><div class="v" id="o-drinks">-</div><div class="k">Standard drinks</div></div>
+    <div class="out wide"><div class="v" id="o-band">-</div><div class="k">Strength verdict</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>3. Sour balance (first 3 ingredients = strong / sweet / sour)</h2>
+  <div class="outs">
+    <div class="out wide"><div class="v" id="o-balance">-</div><div class="k">Balance notes</div></div>
+    <div class="out wide"><div class="v" id="o-batch">-</div><div class="k">Batch for the servings</div></div>
+  </div>
+</section>
+
+<script>
+// PourMath engine - cocktail dilution and strength math. Pure functions, no DOM.
+(function (root) {
+  'use strict';
+
+  // Ingredients: [{name, ml, abv}] where abv is a fraction (0.40) or 0 for non-alcoholic.
+  function totals(ingredients) {
+    var vol = 0, alc = 0;
+    ingredients.forEach(function (i) {
+      if (i.ml < 0) throw new Error('negative ml for ' + i.name);
+      vol += i.ml;
+      alc += i.ml * (i.abv || 0);
+    });
+    return { volume: vol, alcohol: alc, abv: vol > 0 ? alc / vol : 0 };
+  }
+
+  // Dilution fractions by method (water added as fraction of pre-dilution volume).
+  var DILUTION = { neat: 0.0, built: 0.10, stirred: 0.25, shaken: 0.30 };
+  function dilutionFor(method) {
+    if (!(method in DILUTION)) throw new Error('unknown method: ' + method);
+    return DILUTION[method];
+  }
+
+  // After mixing: dilution adds water, alcohol stays constant.
+  function afterMix(ingredients, method) {
+    var t = totals(ingredients);
+    var d = dilutionFor(method);
+    var finalVol = t.volume * (1 + d);
+    return {
+      volume: finalVol,
+      water: t.volume * d,
+      alcohol: t.alcohol,
+      abv: finalVol > 0 ? t.alcohol / finalVol : 0
+    };
+  }
+
+  // US standard drink: 14g ethanol ~= 17.7 ml pure alcohol.
+  function standardDrinks(alcoholMl) {
+    return alcoholMl / 17.7;
+  }
+
+  function strengthBand(abv) {
+    if (abv === 0) return 'zero-proof';
+    if (abv < 0.08) return 'light - highball territory';
+    if (abv < 0.15) return 'easy - spritz strength';
+    if (abv < 0.25) return 'standard - classic sour strength';
+    if (abv < 0.32) return 'stiff - martini neighborhood';
+    return 'sipper - treat it like straight spirit';
+  }
+
+  // Balance check for sours: strong : sweet : sour. Classic is 2 : 0.75-1 : 0.75-1.
+  function sourBalance(strongMl, sweetMl, sourMl) {
+    if (strongMl <= 0) throw new Error('strong part must be positive');
+    var s = sweetMl / strongMl, t = sourMl / strongMl;
+    var notes = [];
+    if (s < 0.3) notes.push('low on sweet - likely sharp');
+    else if (s > 0.75) notes.push('heavy on sweet - likely cloying');
+    else notes.push('sweet in range');
+    if (t < 0.3) notes.push('low on sour - may taste flat');
+    else if (t > 0.75) notes.push('heavy on sour - pucker warning');
+    else notes.push('sour in range');
+    if (Math.abs(s - t) > 0.4) notes.push('sweet and sour are far apart - the drink will lean');
+    return { sweetRatio: s, sourRatio: t, notes: notes };
+  }
+
+  // Batch a spec to N servings. Returns per-ingredient totals and vessel volume (with dilution).
+  function batch(ingredients, method, servings) {
+    if (servings <= 0) throw new Error('servings must be positive');
+    var per = afterMix(ingredients, method);
+    var lines = ingredients.map(function (i) {
+      return { name: i.name, ml: i.ml * servings };
+    });
+    var preVol = totals(ingredients).volume * servings;
+    return {
+      lines: lines,
+      preDilutionMl: preVol,
+      waterMl: per.water * servings,
+      finalMl: per.volume * servings,
+      abv: per.abv,
+      standardDrinks: standardDrinks(per.alcohol * servings)
+    };
+  }
+
+  var api = {
+    totals: totals,
+    dilutionFor: dilutionFor,
+    afterMix: afterMix,
+    standardDrinks: standardDrinks,
+    strengthBand: strengthBand,
+    sourBalance: sourBalance,
+    batch: batch
+  };
+  root.PourMath = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  var E = window.PourMath;
+  var ROWS = 4;
+  var holder = document.getElementById('ings');
+  for (var r = 0; r < ROWS; r++) {
+    var div = document.createElement('div');
+    div.className = 'row';
+    div.innerHTML = '<div><label>Ingredient ' + (r + 1) + '</label><input id="nm' + r + '" class="nm" type="text" placeholder="name"></div>' +
+      '<div><label>ml</label><input id="ml' + r + '" class="ml" type="number" step="5" value="0"></div>' +
+      '<div><label>ABV %</label><input id="abv' + r + '" class="abv" type="number" step="1" value="0"></div>';
+    holder.appendChild(div);
+  }
+
+  function set(id, v) { document.getElementById(id).textContent = v; }
+  function readIngs() {
+    var out = [];
+    for (var r = 0; r < ROWS; r++) {
+      var ml = parseFloat(document.getElementById('ml' + r).value) || 0;
+      var abv = (parseFloat(document.getElementById('abv' + r).value) || 0) / 100;
+      var nm = document.getElementById('nm' + r).value.trim() || ('ingredient ' + (r + 1));
+      if (ml > 0) out.push({ name: nm, ml: ml, abv: abv });
+    }
+    return out;
+  }
+
+  function compute() {
+    var ings = readIngs();
+    var method = document.getElementById('method').value;
+    var servings = Math.max(1, parseInt(document.getElementById('servings').value, 10) || 1);
+    if (!ings.length) {
+      ['o-abv', 'o-vol', 'o-water', 'o-drinks', 'o-band', 'o-balance', 'o-batch'].forEach(function (id) { set(id, '-'); });
+      return;
+    }
+    var m = E.afterMix(ings, method);
+    set('o-abv', (m.abv * 100).toFixed(1) + '%');
+    set('o-vol', Math.round(m.volume) + ' ml');
+    set('o-water', Math.round(m.water) + ' ml');
+    set('o-drinks', E.standardDrinks(m.alcohol).toFixed(1));
+    set('o-band', E.strengthBand(m.abv));
+    if (ings.length >= 3) {
+      var b = E.sourBalance(ings[0].ml, ings[1].ml, ings[2].ml);
+      set('o-balance', (Math.round(b.sweetRatio * 100) / 100) + ' sweet : ' + (Math.round(b.sourRatio * 100) / 100) + ' sour - ' + b.notes.join('; '));
+    } else {
+      set('o-balance', 'needs three ingredients (strong, sweet, sour)');
+    }
+    var bt = E.batch(ings, method, servings);
+    set('o-batch', bt.lines.map(function (l) { return l.name + ' ' + Math.round(l.ml) + ' ml'; }).join(' + ') +
+      '; add ' + Math.round(bt.waterMl) + ' ml water for dilution; vessel needs ' + Math.round(bt.finalMl) + ' ml');
+  }
+
+  var presets = [
+    { name: 'Margarita', v: { nm0: 'tequila', ml0: 60, abv0: 40, nm1: 'lime', ml1: 30, abv1: 0, nm2: 'cointreau', ml2: 30, abv2: 40, nm3: '', ml3: 0, abv3: 0, method: 'shaken', servings: 1 } },
+    { name: 'Martini', v: { nm0: 'gin', ml0: 60, abv0: 40, nm1: 'dry vermouth', ml1: 15, abv1: 18, nm2: '', ml2: 0, abv2: 0, nm3: '', ml3: 0, abv3: 0, method: 'stirred', servings: 1 } },
+    { name: 'Negroni batch x8', v: { nm0: 'gin', ml0: 30, abv0: 40, nm1: 'campari', ml1: 30, abv1: 24, nm2: 'sweet vermouth', ml2: 30, abv2: 16, nm3: '', ml3: 0, abv3: 0, method: 'stirred', servings: 8 } },
+    { name: 'Whiskey sour', v: { nm0: 'bourbon', ml0: 60, abv0: 45, nm1: 'simple syrup', ml1: 22, abv1: 0, nm2: 'lemon', ml2: 30, abv2: 0, nm3: '', ml3: 0, abv3: 0, method: 'shaken', servings: 1 } }
+  ];
+  var ph = document.getElementById('presets');
+  presets.forEach(function (p) {
+    var b = document.createElement('button');
+    b.textContent = p.name;
+    b.addEventListener('click', function () {
+      Object.keys(p.v).forEach(function (k) {
+        var el = document.getElementById(k);
+        if (el) el.value = p.v[k];
+      });
+      compute();
+    });
+    ph.appendChild(b);
+  });
+
+  holder.addEventListener('input', compute);
+  document.getElementById('method').addEventListener('change', compute);
+  document.getElementById('servings').addEventListener('input', compute);
+  presets[0] && (function () {
+    Object.keys(presets[0].v).forEach(function (k) {
+      var el = document.getElementById(k);
+      if (el) el.value = presets[0].v[k];
+    });
+  })();
+  compute();
+})();
+</script>
+</body>
+</html>
